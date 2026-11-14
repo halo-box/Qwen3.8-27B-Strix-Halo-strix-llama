@@ -385,7 +385,8 @@ tests/bootloader_test.sh            # setup.sh's kernel parameter step on each b
 
 Some parts are tested without the hardware. `tests/host_test.sh` finds the gfx1151 among other GPUs through KFD's
 topology. `tests/bootloader_test.sh` runs the kernel parameter step on rpm-ostree, kernelstub, grubby, Debian and
-Arch GRUB, extlinux and systemd-boot.
+Arch GRUB, extlinux and systemd-boot. `./setup.sh` installed the missing tools and Docker with the distro's package
+manager in Debian 13, Ubuntu 26.04, Fedora 44, Arch and openSUSE Tumbleweed containers.
 
 Other vendors' Strix Halo machines, 64 GB machines, other distros and kernels on real hardware, and a second GPU in
 the same machine are not tested yet. The memory plan reads each host's own GTT limit, `MemTotal` and `CmaFree`, so a
@@ -405,7 +406,8 @@ open an issue with the output of `./setup.sh --check`, `./start.sh` and `python3
   boot loaders, add the parameters by hand.
 - Linux with the amdgpu driver. Kernel 7.0 (Ubuntu 26.04) is tested; older kernels are not.
 - Docker, with your user in the `docker` group, and `bash`, `curl`, `python3`, `sha256sum` and `pgrep` on the host.
-  On Alpine: `apk add bash curl python3 docker`.
+  `./setup.sh` installs what is missing with apt-get, dnf, pacman or zypper, and asks first. On Alpine:
+  `apk add bash curl python3 docker`.
 - About 25 GB of free disk for the model files, plus the engine image: 0.3 GiB (Vulkan) or 8.6 GiB (ROCm).
 
 ## Benchmarks
@@ -429,7 +431,8 @@ sparkDash's commit `da20ac5b4940bd9ff349fdb020e32252dd71fa21`. Results go to `re
   `Couldn't update BO_VA (-12)` in `dmesg`, and the GPU driver can hang until a reboot. On ROCm, KFD refuses it. The
   recipe reads the weights with `--load-mode none`.
 - After many hours of GPU work in the same boot, a large load can fail with `Couldn't update BO_VA (-12)`, or leave
-  the server stuck in the kernel (process state `D`, GTT still held). A reboot fixes it.
+  the server stuck in the kernel: `start.sh` stops at a fixed percentage of the load, the process is in state `D`, GTT
+  stays held and `dmesg` shows `llama-server ... blocked for more than 120 seconds`. A reboot fixes it.
 - Do not start a configuration past the memory plan (`FORCE=1`) on Vulkan. Vulkan fills GTT pages as it first
   touches them, after any allocation check. Near the GTT limit, the kernel then kills host services before anything
   can stop it. ROCm refuses an allocation that does not fit.
