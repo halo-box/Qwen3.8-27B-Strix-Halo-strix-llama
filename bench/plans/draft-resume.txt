@@ -1,0 +1,5 @@
+# The rest of draft.txt and draft2.txt, after an interrupted sweep.
+dflash-q4-n5  | DRAFT=dflash DRAFT_N=5 PARALLEL=1           | --clients 1 --prefill ""
+dflash-q8-n7  | DRAFT=dflash DRAFT_N=7 DRAFT_FILE=Qwen3.8-27B-DFlash2-Q8_0.gguf PARALLEL=1 | --clients 1 --prefill ""
+mtp-n5        | DRAFT=mtp DRAFT_N=5 PARALLEL=1              | --clients 1 --prefill ""
+mtp-n6        | DRAFT=mtp DRAFT_N=6 PARALLEL=1              | --clients 1 --prefill ""

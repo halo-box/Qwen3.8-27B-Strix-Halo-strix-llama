@@ -1,0 +1,8 @@
+# Which draft, and how long: one request, a 262k window, Vulkan, q8_0 KV, ubatch 2048. Decode only, median of 3.
+none          | DRAFT=none PARALLEL=1                       | --clients 1 --prefill ""
+mtp-n2        | DRAFT=mtp DRAFT_N=2 PARALLEL=1              | --clients 1 --prefill ""
+mtp-n3        | DRAFT=mtp DRAFT_N=3 PARALLEL=1              | --clients 1 --prefill ""
+mtp-n4        | DRAFT=mtp DRAFT_N=4 PARALLEL=1              | --clients 1 --prefill ""
+dflash-q4-n7  | DRAFT=dflash DRAFT_N=7 PARALLEL=1           | --clients 1 --prefill ""
+dflash-q4-n5  | DRAFT=dflash DRAFT_N=5 PARALLEL=1           | --clients 1 --prefill ""
+dflash-q8-n7  | DRAFT=dflash DRAFT_N=7 DRAFT_FILE=Qwen3.8-27B-DFlash2-Q8_0.gguf PARALLEL=1 | --clients 1 --prefill ""

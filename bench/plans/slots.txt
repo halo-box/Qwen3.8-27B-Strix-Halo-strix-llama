@@ -1,0 +1,8 @@
+# How many requests at once, and when to stop drafting: Vulkan, q8_0 KV, 262k windows, the chosen draft. Decode only, median of 3.
+p4-draft-always | PARALLEL=4 SPEC_DRAFT_MAX_SLOTS=0  | --clients 1,2,4 --prefill ""
+p4-draft-max2   | PARALLEL=4 SPEC_DRAFT_MAX_SLOTS=2  | --clients 1,2,4 --prefill ""
+p8-draft-always | PARALLEL=8 SPEC_DRAFT_MAX_SLOTS=0  | --clients 1,2,4,8 --prefill ""
+p8-draft-max4   | PARALLEL=8 SPEC_DRAFT_MAX_SLOTS=4  | --clients 1,2,4,8 --prefill ""
+p8-none         | PARALLEL=8 DRAFT=none              | --clients 1,2,4,8 --prefill ""
+p1-adaptive     | PARALLEL=1 DRAFT_ADAPTIVE=1         | --clients 1 --prefill ""
+p8-adaptive     | PARALLEL=8 DRAFT_ADAPTIVE=1         | --clients 1,2,4,8 --prefill ""

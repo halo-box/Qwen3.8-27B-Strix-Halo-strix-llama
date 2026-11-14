@@ -1,0 +1,4 @@
+# The README memory table: UD-Q4_K_XL, ubatch 2048, the DFlash2 draft and vision on. Smallest first; bench/memory.sh stops at the first that does not load.
+rocm q8 1x262k     | BACKEND=rocm PARALLEL=1 CONTEXT_PER_SLOT=262144
+rocm q8 4x262k     | BACKEND=rocm PARALLEL=4 CONTEXT_PER_SLOT=262144
+rocm f16 1x262k    | BACKEND=rocm PARALLEL=1 CONTEXT_PER_SLOT=262144 KV_DTYPE=f16

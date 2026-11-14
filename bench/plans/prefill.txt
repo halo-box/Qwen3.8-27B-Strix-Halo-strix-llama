@@ -1,0 +1,8 @@
+# Prefill per backend and ubatch: one request, a 262k window, the default draft. Prefill only.
+vk-ub1024   | BACKEND=vulkan PARALLEL=1 UBATCH=1024  | --clients "" --prefill 8192,32768
+vk-ub2048   | BACKEND=vulkan PARALLEL=1 UBATCH=2048  | --clients "" --prefill 8192,32768
+vk-ub4096   | BACKEND=vulkan PARALLEL=1 UBATCH=4096  | --clients "" --prefill 8192,32768
+rocm-ub2048 | BACKEND=rocm PARALLEL=1 UBATCH=2048    | --clients "" --prefill 8192,32768
+rocm-ub4096 | BACKEND=rocm PARALLEL=1 UBATCH=4096    | --clients "" --prefill 8192,32768
+vk-ub2048-none | BACKEND=vulkan PARALLEL=1 UBATCH=2048 DRAFT=none | --clients "" --prefill 8192,32768
+vk-ub2048-mtp  | BACKEND=vulkan PARALLEL=1 UBATCH=2048 DRAFT=mtp  | --clients "" --prefill 8192,32768
