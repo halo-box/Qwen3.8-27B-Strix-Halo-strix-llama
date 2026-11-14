@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# setup.sh's kernel-parameter step on every boot loader it knows, each in a throwaway container:
+# setup.sh's package and kernel-parameter steps on every boot loader it knows, each in a throwaway container:
 # the boot tools are stubs that log their arguments, sudo runs the command as the user, and the
 # user owns /etc and /boot inside the container. Needs Docker and the Strix Halo GPU (for
 # setup.sh's hardware check); nothing on the host is changed.
@@ -46,6 +46,9 @@ run "extlinux (Alpine)" \
 run "systemd-boot" \
     'mkdir -p /boot/loader/entries; printf "title Linux\noptions root=UUID=x rw\n" > /boot/loader/entries/linux.conf' \
     'grep -q "^options root=UUID=x rw .*amdgpu.gttsize=" /boot/loader/entries/linux.conf && ls /boot/loader/entries/linux.conf.bak.* >/dev/null && echo PASS'
+run "packages (apt-get)" \
+    'stub apt-get; stub systemctl' \
+    'grep -q "^apt-get install -y curl python3 procps$" /tmp/calls && grep -q "^apt-get install -y docker.io$" /tmp/calls && grep -q "^systemctl enable --now docker$" /tmp/calls && echo PASS'
 run "no known boot loader" \
     ':' \
     'grep -q "add .* to your boot loader by hand" /tmp/setup.log && echo PASS'

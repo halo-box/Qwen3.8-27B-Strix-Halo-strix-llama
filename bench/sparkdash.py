@@ -30,6 +30,7 @@ import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 IMAGE = "sparkdash:da20ac5"
+SOURCE = "https://github.com/MiaAI-Lab/sparkDash.git#da20ac5b4940bd9ff349fdb020e32252dd71fa21"
 CONTAINER = "sparkdash-bench-recipe"
 API = "http://127.0.0.1:5555/api"
 
@@ -49,6 +50,9 @@ def start_sparkdash():
                              capture_output=True, text=True).stdout.strip()
     if running != "true":
         subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True)
+        if subprocess.run(["docker", "image", "inspect", IMAGE], capture_output=True).returncode:
+            print(f"building {IMAGE} from {SOURCE}", flush=True)
+            subprocess.run(["docker", "build", "-t", IMAGE, SOURCE], check=True)
         cfg = ROOT / "bench" / "data" / "sparkdash"
         cfg.mkdir(parents=True, exist_ok=True)
         subprocess.run(["docker", "run", "-d", "--name", CONTAINER, "--network", "host",

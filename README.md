@@ -376,9 +376,10 @@ bench/quality.sh                                              # what the q8_0 KV
 ```
 
 `bench/sparkdash.py` starts sparkDash (`sparkdash:da20ac5`) in a container on the host network, registers this
-machine as a local unit and runs the benchmarks through sparkDash's API. Build the image once with
-`docker build -t sparkdash:da20ac5 https://github.com/MiaAI-Lab/sparkDash.git#da20ac5b4940bd9ff349fdb020e32252dd71fa21`.
-Results go to `results/sparkdash/<label>.md` and `.json`. `bench/plans/` holds every plan behind the tables here.
+machine as a local unit and runs the benchmarks through sparkDash's API. The first run builds the image from
+sparkDash's commit `da20ac5b4940bd9ff349fdb020e32252dd71fa21`. Results go to `results/sparkdash/<label>.md` and
+`.json`. `bench/plans/` holds every plan behind the tables here. `bench/quality.sh` downloads wikitext-2-raw-v1
+(the copy llama.cpp's perplexity scripts use, checked against its sha256) unless you give it `wiki.test.raw`.
 
 ## Notes
 

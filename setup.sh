@@ -37,20 +37,51 @@ cma=$(awk '/CmaFree/{print int($2 / 2^20)}' /proc/meminfo)
 ((cma > 2)) && note "the kernel counts ${cma} GiB of RAM as CMA-free (CmaTotal $(awk '/CmaTotal/{print int($2/2^20)}' /proc/meminfo) GiB): GPU pages cannot use it, so the server gets ~${cma} GiB less than GTT allows"
 WANT_PARAMS=(amd_iommu=off "ttm.pages_limit=$((gtt_gib * 262144))" "amdgpu.gttsize=$((gtt_gib * 1024))")
 
+PM=""
+[[ -e /run/ostree-booted ]] || for m in apt-get dnf pacman zypper; do command -v $m >/dev/null && { PM=$m; break; }; done
+pkg() {
+    case "$PM:$1" in
+        *:sha256sum | *:stat | *:df) echo coreutils ;;
+        apt-get:pgrep | zypper:pgrep) echo procps ;;
+        *:pgrep) echo procps-ng ;;
+        *:awk) echo gawk ;;
+        pacman:python3) echo python ;;
+        apt-get:docker) echo docker.io ;;
+        dnf:docker) echo moby-engine ;;
+        *) echo "$1" ;;
+    esac
+}
+install() {
+    case $PM in
+        apt-get) sudo apt-get update && sudo apt-get install -y "$@" ;;
+        dnf) sudo dnf install -y "$@" ;;
+        pacman) sudo pacman -S --needed --noconfirm "$@" ;;
+        zypper) sudo zypper -n install "$@" ;;
+    esac
+}
+
 echo "Host tools"
 need=()
-for t in curl python3 sha256sum pgrep stat df awk sed grep; do command -v "$t" >/dev/null || need+=("$t"); done
-if ((${#need[@]})); then bad "missing: ${need[*]} (install them with your package manager; pgrep is in procps)"
+for t in curl python3 sha256sum pgrep stat df awk sed grep; do command -v "$t" >/dev/null || need+=("$(pkg "$t")"); done
+mapfile -t need < <(printf '%s\n' "${need[@]}" | awk 'NF && !seen[$0]++')
+if ((${#need[@]})); then
+    bad "missing packages: ${need[*]}"
+    if [[ -z $PM ]]; then note "install them with your package manager"
+    elif ask "Install ${need[*]} with $PM?"; then install "${need[@]}" || bad "$PM could not install ${need[*]}"; fi
 else ok "curl, python3, sha256sum, pgrep and coreutils"; fi
 
 echo "Docker"
+if ! command -v docker >/dev/null; then
+    if [[ -z $PM ]]; then bad "docker is not installed: https://docs.docker.com/engine/install/"
+    elif ask "Install docker ($(pkg docker)) with $PM and start it?"; then
+        { install "$(pkg docker)" && sudo systemctl enable --now docker; } || bad "$PM could not install docker"
+    else bad "docker is not installed"; fi
+fi
 if command -v docker >/dev/null; then
     ok "docker $(docker --version | awk '{print $3}' | tr -d ,)"
     if id -nG | grep -qw docker || docker info >/dev/null 2>&1; then ok "your user can run docker"
     else bad "your user is not in the docker group"
          ask "Add $USER to the docker group (log out and in afterwards)?" && sudo usermod -aG docker "$USER" && REBOOT=1; fi
-else
-    bad "docker is not installed: https://docs.docker.com/engine/install/"
 fi
 
 echo "GPU access"
