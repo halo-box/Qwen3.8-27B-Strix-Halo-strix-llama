@@ -74,7 +74,8 @@ echo "Docker"
 if ! command -v docker >/dev/null; then
     if [[ -z $PM ]]; then bad "docker is not installed: https://docs.docker.com/engine/install/"
     elif ask "Install docker ($(pkg docker)) with $PM and start it?"; then
-        { install "$(pkg docker)" && sudo systemctl enable --now docker; } || bad "$PM could not install docker"
+        if ! install "$(pkg docker)"; then bad "$PM could not install docker"
+        elif ! sudo systemctl enable --now docker; then bad "docker is installed but did not start: sudo systemctl enable --now docker"; fi
     else bad "docker is not installed"; fi
 fi
 if command -v docker >/dev/null; then

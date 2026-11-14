@@ -19,8 +19,16 @@ your machine.
 
 The numbers come from [sparkDash](https://github.com/MiaAI-Lab/sparkDash), the benchmark that
 [Mia's AI Lab](https://github.com/MiaAI-Lab) uses for its DGX Spark recipes, on a GMKtec EVO-X2 (Ryzen AI Max+ 395).
-[Performance](#performance) has every table, the method, and how they compare with Mia's
-[Qwen3.8-27B TensorFold recipe](https://github.com/MiaAI-Lab/Qwen3.8-27B-DGX-Spark-TensorFold) on one DGX Spark.
+[Performance](#performance) has every table and the method.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="media/dashboard-dark.png">
+  <img src="media/dashboard-light.png" alt="The server's dashboard with eight requests generating at once" width="100%">
+</picture>
+
+The server's own dashboard (`/dashboard`) at the defaults on Vulkan. Eight code requests generate at once at 99.5
+tok/s together. The request before them shows in the list: a 4,050-token prompt prefilled at 464 tok/s, then decoded
+at 27.9 tok/s. The model accepted 77% of the DFlash2 drafts.
 
 ## Quick start
 
@@ -75,21 +83,40 @@ curl -s http://127.0.0.1:8080/v1/chat/completions -H 'Content-Type: application/
 }'
 ```
 
-### Serving other machines
+### Ports and serving other machines
 
-The server listens on `127.0.0.1:8080`, so only the machine itself can reach it. To serve other machines, set an API
+| Port | What | Listens on | Set with |
+| --- | --- | --- | --- |
+| 8080/tcp | the API (`/v1`), `/dashboard`, `/metrics`, `/health` | `127.0.0.1` | `PORT`, `HOST` |
+| 5555/tcp | sparkDash, only while `bench/sparkdash.py` runs | `127.0.0.1` | nothing to set |
+
+Nothing else listens. By default only the machine itself can reach the server. To serve other machines, set an API
 key and the address to listen on, then restart:
 
 ```bash
 API_KEY=$(openssl rand -hex 24) HOST=0.0.0.0 ./start.sh restart     # or put both in .env
 ```
 
-Docker publishes the port with its own firewall rules, which come before ufw (Ubuntu) and firewalld (Fedora). A ufw
-or firewalld rule therefore neither opens nor closes the port. To limit who can connect, set `HOST` to one of the
-machine's addresses, or add a rule to Docker's `DOCKER-USER` chain. This one allows only the local network:
+Clients then send `Authorization: Bearer <API_KEY>`. `/health` answers without the key.
+
+Docker publishes the port with its own firewall rules, which come before ufw (Ubuntu) and firewalld (Fedora). So in
+the usual setup the port is open as soon as `HOST` allows it, and a ufw or firewalld rule neither opens nor closes it.
+To limit who can connect, set `HOST` to one of the machine's addresses, or add a rule to Docker's `DOCKER-USER`
+chain. This one allows only the local network (change `192.168.0.0/16` to yours):
 
 ```bash
 sudo iptables -I DOCKER-USER -p tcp --dport 8080 ! -s 192.168.0.0/16 -j DROP
+```
+
+A `DOCKER-USER` rule is lost at reboot. To keep it, save it with your distro's tool, such as `iptables-persistent`
+on Debian and Ubuntu.
+
+If Docker does not manage the firewall (`"iptables": false` in `/etc/docker/daemon.json`), open the port yourself:
+
+```bash
+sudo ufw allow from 192.168.0.0/16 to any port 8080 proto tcp                         # ufw
+sudo firewall-cmd --permanent --add-rich-rule='rule family=ipv4 source address=192.168.0.0/16 port port=8080 protocol=tcp accept' \
+    && sudo firewall-cmd --reload                                                        # firewalld
 ```
 
 ### Dashboard and metrics
@@ -97,6 +124,26 @@ sudo iptables -I DOCKER-USER -p tcp --dport 8080 ! -s 192.168.0.0/16 -j DROP
 `http://<host>:8080/dashboard` is the server's own dashboard. It shows decode and prefill speed live and over the
 last ten minutes, draft acceptance, each request's progress and KV use, the last requests and the configuration. It
 asks for the API key when one is set. `http://<host>:8080/metrics` serves the same counters to Prometheus.
+
+Eight code requests arriving at once, 30 seconds. The prompts prefill at up to 719 tok/s, then all eight generate at
+about 96 tok/s together:
+
+<p align="center"><img src="media/dashboard-video.gif" alt="30 seconds of the dashboard while eight requests prefill and then generate" width="100%"></p>
+
+A long prompt three quarters through its prefill, at 410 tok/s. The bar shows 47.1k of the request's 262.1k window:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="media/long-prompt-dark.png">
+  <img src="media/long-prompt-light.png" alt="The dashboard while one request prefills a 47k-token prompt" width="100%">
+</picture>
+
+The configuration the server reports, which is the recipe's: eight 262.1k windows, a q8_0 KV cache, and DFlash2
+with up to seven drafts:
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="media/configuration-dark.png">
+  <img src="media/configuration-light.png" alt="The dashboard's model and configuration panel" width="60%">
+</picture>
 
 ## Performance
 
@@ -200,14 +247,10 @@ DGX Spark with the same drafter, eight requests and full windows, and reports th
 | Decode, code, 1 / 8 requests (aggregate) | 51.3 / 94.5 tok/s | 136.9 / 323.2 tok/s |
 | Prefill, 8k / 32k / 128k | 486 / 440 / 321 tok/s | 1,793 / 1,633 / 1,118 tok/s |
 
-The Spark is faster in every row: about 3x in decode with one request and 3.5x in prefill. Prefill is bound by
-matrix compute: here it runs at about 26 TFLOPS (486 tok/s at two operations per weight), and TensorFold's README
-puts its own at about 100, with FP8 prompts. Decode is bound by memory, and both machines read memory at about the
-same speed (256 GB/s here, 273 on the Spark). Without a draft, this machine decodes at 12.5 tok/s, close to what that
-bandwidth allows for 16.5 GiB of weights. So the decode gap is in the engine. TensorFold verifies a tree of DFlash2
-drafts and picks its width each round; llama.cpp verifies one draft chain. And on Vulkan, two requests decode
-together no faster than one, with or without a draft (11.5 against 12.2 tok/s with no draft), and four only a little
-faster: batching starts to pay at eight. Both are open strix-llama.cpp work, not settings.
+Prefill is bound by matrix compute, and the Spark has about four times as much (about 100 TFLOPS against 26 here).
+Decode is bound by memory, and both machines read it at about the same speed (256 GB/s here, 273 on the Spark), so
+that gap is in the engine: TensorFold verifies a tree of DFlash2 drafts, llama.cpp one draft chain, and on Vulkan two
+to four requests decode together little faster than one.
 
 ## Memory
 
@@ -231,9 +274,8 @@ The memory plan in `start.sh` uses these figures (`MODEL_GIB`, `COMPUTE_GIB`, `K
 
 Under full load the server takes more than once loaded, because Vulkan fills its memory pages as prompts grow. With
 eight requests at once, each with about 196k tokens, GTT peaked at 102.4 GiB, and the lowest usable RAM
-(`MemAvailable` minus `CmaFree`) was 4.2 GiB. That is enough for the host and little else. Mia's TensorFold recipe
-is as tight on the Spark: about 4 GiB free right after start at its defaults, and it calls that tight for a shared
-machine. On a machine that also runs other services, serve seven requests (`PARALLEL=7`), which leaves about 14 GiB.
+(`MemAvailable` minus `CmaFree`) was 4.2 GiB. That is enough for the host and little else. On a machine that also runs
+other services, serve seven requests (`PARALLEL=7`), which leaves about 14 GiB.
 
 `start.sh` refuses a configuration that needs more than the smallest of three limits:
 
