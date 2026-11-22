@@ -1,0 +1,354 @@
+sampling : keyed Gumbel-max dist and a DFlash2 walk that follows it
+
+From https://github.com/halo-box/strix-llama.cpp/pull/308 (head bc9d0927e), rebased on strix-llama.cpp b13579.
+
+ 9 files changed, 221 insertions(+), 7 deletions(-)
+
+diff --git a/common/arg.cpp b/common/arg.cpp
+index 7b61319e3..8235ebd98 100644
+--- a/common/arg.cpp
++++ b/common/arg.cpp
+@@ -4464,17 +4464,23 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
+         }
+     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_BACKEND_SAMPLING"));
+     add_opt(common_arg(
+-        {"--spec-draft-sampling"}, "{greedy,probabilistic}",
++        {"--spec-draft-sampling"}, "{greedy,probabilistic,keyed}",
+         string_format("how the draft is sampled: greedy takes its argmax, probabilistic samples it and has "
+-                      "the target verify by rejection sampling (default: %s)",
+-                      params.speculative.draft.probabilistic ? "probabilistic" : "greedy"),
++                      "the target verify by rejection sampling, keyed has the target draw by Gumbel-max with noise keyed "
++                      "by seed, position and token, and the DFlash2 draft adds the same noise (default: %s)",
++                      params.speculative.draft.probabilistic ? "probabilistic" : params.sampling.dist_keyed ? "keyed" : "greedy"),
+         [](common_params & params, const std::string & value) {
+             if (value == "greedy") {
+                 params.speculative.draft.probabilistic = false;
++                params.sampling.dist_keyed = false;
+             } else if (value == "probabilistic") {
+                 params.speculative.draft.probabilistic = true;
++                params.sampling.dist_keyed = false;
++            } else if (value == "keyed") {
++                params.speculative.draft.probabilistic = false;
++                params.sampling.dist_keyed = true;
+             } else {
+-                throw std::invalid_argument("invalid value, must be one of: greedy, probabilistic");
++                throw std::invalid_argument("invalid value, must be one of: greedy, probabilistic, keyed");
+             }
+         }
+     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_SAMPLING"));
+diff --git a/common/common.h b/common/common.h
+index 4aee1bf2b..eaa8c6c00 100644
+--- a/common/common.h
++++ b/common/common.h
+@@ -260,6 +260,7 @@ struct common_params_sampling {
+     bool    ignore_eos         = false;
+     bool    no_perf            = false;  // disable performance metrics
+     bool    timing_per_token   = false;
++    bool    dist_keyed         = false;  // draw with dist-keyed instead of dist, so a drafter can predict the draw
+ 
+     uint64_t user_sampling_config = 0; // bitfield to track user-specified samplers
+ 
+diff --git a/common/sampling.cpp b/common/sampling.cpp
+index 265506c47..10a15a621 100644
+--- a/common/sampling.cpp
++++ b/common/sampling.cpp
+@@ -433,7 +433,8 @@ struct common_sampler * common_sampler_init(
+             const bool greedy = params.n_probs == 0 && !params.samplers.empty() &&
+                 ((params.samplers.back() == COMMON_SAMPLER_TYPE_TEMPERATURE && params.temp == 0.0f && params.dynatemp_range == 0.0f) ||
+                  (params.samplers.back() == COMMON_SAMPLER_TYPE_TOP_K && params.top_k == 1));
+-            samplers.push_back(greedy ? llama_sampler_init_greedy() : llama_sampler_init_dist(params.seed));
++            samplers.push_back(greedy ? llama_sampler_init_greedy() :
++                    params.dist_keyed ? llama_sampler_init_dist_keyed(params.seed) : llama_sampler_init_dist(params.seed));
+         }
+     } else if (params.mirostat == 1) {
+         samplers.push_back(llama_sampler_init_temp(params.temp));
+diff --git a/common/speculative.cpp b/common/speculative.cpp
+index 34286f028..b28a35e1e 100644
+--- a/common/speculative.cpp
++++ b/common/speculative.cpp
+@@ -1746,8 +1746,22 @@ struct common_speculative_impl_draft_dflash2 final : public common_speculative_i
+                 const int32_t top_k = selector_top_k;
+                 const float * scores = row + top_k + (size_t) predecessor * top_k;
+ 
+-                predecessor = (int32_t) std::distance(scores,
+-                        std::max_element(scores, scores + top_k));
++                if (dp.keyed && !sample) {
++                    // the target's keyed noise is known ahead, so the walk follows its draw: TensorFold v0.6.0
++                    // (ashhart/TensorFold, Apache-2.0) draft_tree.py weighs it 0.7 into the draft scores
++                    double best = -INFINITY;
++                    for (int32_t k = 0; k < top_k; ++k) {
++                        const double s = scores[k] / dp.temp +
++                            0.7 * llama_sampler_dist_keyed_gumbel(dp.seed, dp.pos0 + i, (llama_token) row[k]);
++                        if (s > best) {
++                            best = s;
++                            predecessor = k;
++                        }
++                    }
++                } else {
++                    predecessor = (int32_t) std::distance(scores,
++                            std::max_element(scores, scores + top_k));
++                }
+                 if (params.p_min > 0.0f || sample) {
+                     // softmax(scores / temp) at the argmax, i.e. 1 / sum(exp((s_k - s_max) / temp))
+                     probs.resize(top_k);
+diff --git a/common/speculative.h b/common/speculative.h
+index d14d31d35..cefa69dc0 100644
+--- a/common/speculative.h
++++ b/common/speculative.h
+@@ -79,6 +79,9 @@ struct common_speculative_draft_params {
+     // the target's temp and seed, read only when the drafter samples probabilistically
+     float    temp = 1.0f;
+     uint32_t seed = LLAMA_DEFAULT_SEED;
++
++    // the target draws with dist-keyed at temp: the drafter may add the same noise to its scores
++    bool keyed = false;
+ };
+ 
+ common_speculative_draft_params & common_speculative_get_draft_params(common_speculative * spec, llama_seq_id seq_id);
+diff --git a/include/llama.h b/include/llama.h
+index 27fce5101..433549b96 100644
+--- a/include/llama.h
++++ b/include/llama.h
+@@ -1540,6 +1540,14 @@ extern "C" {
+     /// seed == LLAMA_DEFAULT_SEED to use a random seed.
+     LLAMA_API struct llama_sampler * llama_sampler_init_dist(uint32_t seed);
+ 
++    /// @details Same distribution as dist, drawn by Gumbel-max with noise keyed by (seed, position, token id).
++    /// The position is the count of tokens accepted since reset. A drafter that knows the seed can add the same noise.
++    /// seed == LLAMA_DEFAULT_SEED to use a random seed.
++    LLAMA_API struct llama_sampler * llama_sampler_init_dist_keyed(uint32_t seed);
++
++    /// The Gumbel noise that dist_keyed adds to token id at position pos.
++    LLAMA_API double llama_sampler_dist_keyed_gumbel(uint32_t seed, int64_t pos, llama_token id);
++
+     /// @details Top-K sampling described in academic paper "The Curious Case of Neural Text Degeneration" https://arxiv.org/abs/1904.09751
+     /// Setting k <= 0 makes this a noop
+     LLAMA_API struct llama_sampler * llama_sampler_init_top_k      (int32_t k);
+diff --git a/src/llama-sampler.cpp b/src/llama-sampler.cpp
+index d8cd441a5..545204075 100644
+--- a/src/llama-sampler.cpp
++++ b/src/llama-sampler.cpp
+@@ -1421,6 +1421,122 @@ struct llama_sampler * llama_sampler_init_dist(uint32_t seed) {
+     );
+ }
+ 
++// dist-keyed: the keyed Gumbel draw of TensorFold v0.6.0 (ashhart/TensorFold, Apache-2.0, engine/exact_sampling.py)
++
++static uint64_t llama_sampler_keyed_mix(uint64_t x) {
++    x ^= x >> 30;
++    x *= 0xBF58476D1CE4E5B9ull;
++    x ^= x >> 27;
++    x *= 0x94D049BB133111EBull;
++    return x ^ (x >> 31);
++}
++
++double llama_sampler_dist_keyed_gumbel(uint32_t seed, int64_t pos, llama_token id) {
++    uint64_t x = llama_sampler_keyed_mix((uint64_t) seed + 0x9E3779B97F4A7C15ull);
++    x = llama_sampler_keyed_mix(x ^ ((uint64_t) pos * 0xD1B54A32D192ED03ull));
++    x = llama_sampler_keyed_mix(x ^ (uint64_t) (uint32_t) id);
++    const double u = (double) (x >> 11) * 0x1.0p-53 + 0x1.0p-54;
++    return -std::log(-std::log(u));
++}
++
++struct llama_sampler_dist_keyed {
++    const uint32_t seed;
++          uint32_t seed_cur;
++          int64_t  pos;
++};
++
++static const char * llama_sampler_dist_keyed_name(const struct llama_sampler * /*smpl*/) {
++    return "dist-keyed";
++}
++
++static void llama_sampler_dist_keyed_accept(struct llama_sampler * smpl, llama_token /*token*/) {
++    ((llama_sampler_dist_keyed *) smpl->ctx)->pos++;
++}
++
++static void llama_sampler_dist_keyed_apply(struct llama_sampler * smpl, llama_token_data_array * cur_p) {
++    const auto * ctx = (const llama_sampler_dist_keyed *) smpl->ctx;
++
++    if (cur_p->size == 0) {
++        cur_p->selected = -1;
++        return;
++    }
++
++    float max_l = cur_p->data[0].logit;
++    for (size_t i = 1; i < cur_p->size; ++i) {
++        max_l = std::max(max_l, cur_p->data[i].logit);
++    }
++
++    double sum = 0.0;
++    double best = -INFINITY;
++    size_t selected = 0;
++    for (size_t i = 0; i < cur_p->size; ++i) {
++        const auto & td = cur_p->data[i];
++        const double score = (double) td.logit + llama_sampler_dist_keyed_gumbel(ctx->seed_cur, ctx->pos, td.id);
++        if (score > best || (score == best && td.id < cur_p->data[selected].id)) {
++            best = score;
++            selected = i;
++        }
++        cur_p->data[i].p = expf(td.logit - max_l);
++        sum += cur_p->data[i].p;
++    }
++    for (size_t i = 0; i < cur_p->size; ++i) {
++        cur_p->data[i].p /= sum;
++    }
++    cur_p->selected = selected;
++}
++
++static void llama_sampler_dist_keyed_reset(struct llama_sampler * smpl) {
++    auto * ctx = (llama_sampler_dist_keyed *) smpl->ctx;
++    ctx->seed_cur = get_rng_seed(ctx->seed);
++    ctx->pos = 0;
++}
++
++static struct llama_sampler * llama_sampler_dist_keyed_clone(const struct llama_sampler * smpl) {
++    const auto * ctx = (const llama_sampler_dist_keyed *) smpl->ctx;
++    auto * result = llama_sampler_init_dist_keyed(ctx->seed);
++    auto * result_ctx = (llama_sampler_dist_keyed *) result->ctx;
++    result_ctx->seed_cur = ctx->seed_cur;
++    result_ctx->pos      = ctx->pos;
++    return result;
++}
++
++static void llama_sampler_dist_keyed_free(struct llama_sampler * smpl) {
++    delete (llama_sampler_dist_keyed *) smpl->ctx;
++}
++
++static void llama_sampler_dist_keyed_copy_state(const struct llama_sampler * src, struct llama_sampler * dst) {
++    const auto * src_ctx = (const llama_sampler_dist_keyed *) src->ctx;
++    auto       * dst_ctx = (llama_sampler_dist_keyed *) dst->ctx;
++    dst_ctx->seed_cur = src_ctx->seed_cur;
++    dst_ctx->pos      = src_ctx->pos;
++}
++
++static struct llama_sampler_i llama_sampler_dist_keyed_i = {
++    /* .name              = */ llama_sampler_dist_keyed_name,
++    /* .accept            = */ llama_sampler_dist_keyed_accept,
++    /* .apply             = */ llama_sampler_dist_keyed_apply,
++    /* .reset             = */ llama_sampler_dist_keyed_reset,
++    /* .clone             = */ llama_sampler_dist_keyed_clone,
++    /* .free              = */ llama_sampler_dist_keyed_free,
++    /* .backend_init      = */ nullptr,
++    /* .backend_accept    = */ nullptr,
++    /* .backend_apply     = */ nullptr,
++    /* .backend_set_input = */ nullptr,
++    /* .backend_reset     = */ nullptr,
++    /* .copy_state        = */ llama_sampler_dist_keyed_copy_state,
++};
++
++struct llama_sampler * llama_sampler_init_dist_keyed(uint32_t seed) {
++    return llama_sampler_init(
++        /* .iface = */ &llama_sampler_dist_keyed_i,
++        /* .ctx   = */ new llama_sampler_dist_keyed {
++            /* .seed     = */ seed,
++            /* .seed_cur = */ get_rng_seed(seed),
++            /* .pos      = */ 0,
++        }
++    );
++}
++
+ void llama_sampler_backend_begin(llama_sampler * sampler) {
+     GGML_ASSERT(sampler != nullptr);
+ 
+diff --git a/tests/test-sampling.cpp b/tests/test-sampling.cpp
+index 353a5a1a1..52077b4ef 100644
+--- a/tests/test-sampling.cpp
++++ b/tests/test-sampling.cpp
+@@ -91,6 +91,65 @@ static void test_dist_singleton_rng() {
+     llama_sampler_free(control);
+ }
+ 
++static void test_dist_keyed() {
++    // values of TensorFold v0.6.0 engine/exact_sampling.py: -log(-log(uniform(seed, position, id)))
++    GGML_ASSERT(llama_sampler_dist_keyed_gumbel(7, 3, 11) == 0.1932354989938676);
++    GGML_ASSERT(llama_sampler_dist_keyed_gumbel(4242, 100000, 151643) == -0.5575777577417728);
++
++    const std::vector<float> probs = { 0.1f, 0.2f, 0.3f, 0.4f };
++    std::vector<float> logits;
++    for (float p : probs) {
++        logits.push_back(logf(p));
++    }
++
++    llama_sampler * smpl = llama_sampler_init_dist_keyed(1234);
++    llama_sampler * copy = nullptr;
++
++    const int n = 200000;
++    std::vector<int> counts(probs.size(), 0);
++    std::vector<llama_token> first;
++    for (int i = 0; i < n; ++i) {
++        const llama_token id = sample_dist(smpl, logits);
++        double best = -INFINITY;
++        llama_token want = -1;
++        for (llama_token t = 0; t < (llama_token) logits.size(); ++t) {
++            const double s = logits[t] + llama_sampler_dist_keyed_gumbel(1234, i, t);
++            if (s > best) {
++                best = s;
++                want = t;
++            }
++        }
++        GGML_ASSERT(id == want);
++        if (i < 64) {
++            first.push_back(id);
++        }
++        counts[id]++;
++        llama_sampler_accept(smpl, id);
++        if (i == 31) {
++            copy = llama_sampler_clone(smpl);
++        }
++    }
++    for (size_t t = 0; t < probs.size(); ++t) {
++        GGML_ASSERT(fabs((double) counts[t] / n - probs[t]) < 0.005);
++    }
++
++    for (int i = 32; i < 64; ++i) {
++        const llama_token id = sample_dist(copy, logits);
++        GGML_ASSERT(id == first[i]);
++        llama_sampler_accept(copy, id);
++    }
++
++    llama_sampler_reset(smpl);
++    for (int i = 0; i < 64; ++i) {
++        const llama_token id = sample_dist(smpl, logits);
++        GGML_ASSERT(id == first[i]);
++        llama_sampler_accept(smpl, id);
++    }
++
++    llama_sampler_free(copy);
++    llama_sampler_free(smpl);
++}
++
+ static void test_temp(const std::vector<float> & probs, const std::vector<float> & probs_expected, float temp) {
+     sampler_tester tester(probs, probs_expected);
+ 
+@@ -339,6 +398,7 @@ int main(void) {
+     ggml_time_init();
+ 
+     test_dist_singleton_rng();
++    test_dist_keyed();
+ 
+     test_temp({0.1f, 0.2f, 0.3f, 0.4f}, {0.1f, 0.2f, 0.3f, 0.4f}, 1.0f);
+     test_temp({0.1f, 0.2f, 0.3f, 0.4f}, {0.0f, 0.0f, 0.0f, 1.0f}, 0.0f);
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 13dafde25..79b3bac5d 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -2282,6 +2282,10 @@ private:
+ 
+         // initialize samplers
+         if (task.need_sampling()) {
++            // the drafter adds the keyed noise of the seed the target draws with, so pick a random seed here
++            if (task.params.sampling.dist_keyed && task.params.sampling.seed == LLAMA_DEFAULT_SEED) {
++                task.params.sampling.seed = std::random_device{}();
++            }
+             try {
+                 slot.smpl.reset(common_sampler_init(model_tgt, task.params.sampling));
+             } catch (std::exception & e) {
+@@ -4157,6 +4161,7 @@ private:
+                             /* .result_q = */ spec_reject ? &slot.spec_draft_q : nullptr,
+                             /* .temp     = */ slot.task->params.sampling.temp,
+                             /* .seed     = */ slot.task->params.sampling.seed,
++                            /* .keyed    = */ slot.task->params.sampling.dist_keyed && slot.task->params.sampling.temp > 0.0f,
+                         };
+ 
+                         drafting.push_back(&slot);

@@ -4,8 +4,9 @@
 
 This recipe serves Qwen3.8-27B (dense, 27B) from one 128 GB AMD Strix Halo through an OpenAI-compatible API. Eight
 requests run at once, each with the model's full 262,144-token context, and z-lab's DFlash2 drafter speeds up decode.
-It uses the official [strix-llama.cpp](https://github.com/halo-box/strix-llama.cpp) images, so nothing is built on
-your machine.
+The engine is [strix-llama.cpp](https://github.com/halo-box/strix-llama.cpp) at a pinned release with the patches in
+[`patches/`](patches), built into a local image on the first start (about 4 minutes). `PATCHES=0` uses the release's
+published image and builds nothing.
 
 ## At a glance
 
@@ -42,7 +43,7 @@ cd Qwen3.8-27B-Strix-Halo-strix-llama
 ```
 
 The first start downloads the model (about 18.4 GiB into `~/models/qwen38-27b`), checks each file against Hugging
-Face's sha256, pulls the engine image and loads the model. A download that stops resumes where it left off. When the
+Face's sha256, builds the engine image and loads the model. A download that stops resumes where it left off. When the
 smoke test passes, `start.sh` prints `Qwen3.8-27B is now LIVE on http://127.0.0.1:8080/v1`. Later starts take about
 15 seconds.
 
@@ -298,7 +299,9 @@ variable.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `BACKEND` | `vulkan` | `vulkan` or `rocm`. The image and the memory figures follow it |
-| `IMAGE` | per backend | the engine image |
+| `ENGINE_VERSION` / `ENGINE_REF` | `b13579` / its commit | the strix-llama.cpp release the engine is built from |
+| `PATCHES` | `1` | `1` builds `ENGINE_REF` with `patches/*.patch`; `0` pulls the release's published image |
+| `IMAGE` | per backend and patches | the engine image; set it to use any other image |
 | `SERVER_BIN` | none | the path of `llama-server` in an `IMAGE` whose entrypoint is something else |
 | `MODEL_DIR` | `~/models/qwen38-27b` | where the model files are, or where they download to |
 | `HOST` / `PORT` / `API_KEY` | `127.0.0.1` / `8080` / none | set `API_KEY` before `HOST=0.0.0.0` |
@@ -310,13 +313,16 @@ variable.
 | `DRAFT_N` / `DRAFT_FILE` | `7` / per draft | draft length and file; `DRAFT=mtp` takes 3 and `mtp-Qwen3.8-27B-Q4_0.gguf` |
 | `DRAFT_ADAPTIVE` | `1` | size each draft from measured acceptance instead of always drafting `DRAFT_N` |
 | `SPEC_DRAFT_MAX_SLOTS` | `0` | draft only while at most this many requests generate; 0 drafts always |
+| `DRAFT_SAMPLING` | `greedy` | `greedy`, `probabilistic` (the target verifies by rejection sampling) or `keyed` (`patches/0003`) |
 | `VISION` | `1` | image input |
 | `TEMPERATURE` / `TOP_P` / `TOP_K` / `MIN_P` | `1.0` / `0.95` / `20` / `0` | default sampling, the model's own |
 | `CTX_CHECKPOINTS` / `CACHE_RAM` | `4` / `0` | per-request state checkpoints and the host prompt cache; both grow host RAM over time |
 
 ### What `start.sh` does
 
-1. `scripts/prepare.sh` downloads any missing model file and pulls the engine image.
+1. `scripts/prepare.sh` downloads any missing model file. If the engine image is missing, it fetches `ENGINE_REF`,
+   applies `patches/*.patch` and builds the image with strix-llama.cpp's own `.devops/<backend>.Dockerfile`. The
+   image tag carries the hash of the patches, so a changed patch builds a new image.
 2. The memory plan works out what the configuration takes on the GPU and refuses one that does not fit. The error
    says how many requests would fit.
 3. `start.sh` checks the arguments with `llama-server` in a throwaway container, so a typo leaves a running server
@@ -405,10 +411,11 @@ open an issue with the output of `./setup.sh --check`, `./start.sh` and `python3
   kernelstub (Pop!_OS), grubby (Fedora), GRUB (Debian, Ubuntu, Arch), extlinux (Alpine) and systemd-boot. For other
   boot loaders, add the parameters by hand.
 - Linux with the amdgpu driver. Kernel 7.0 (Ubuntu 26.04) is tested; older kernels are not.
-- Docker, with your user in the `docker` group, and `bash`, `curl`, `python3`, `sha256sum` and `pgrep` on the host.
+- Docker, with your user in the `docker` group, and `bash`, `curl`, `git`, `python3`, `sha256sum` and `pgrep` on the host.
   `./setup.sh` installs what is missing with apt-get, dnf, pacman or zypper, and asks first. On Alpine:
-  `apk add bash curl python3 docker`.
-- About 25 GB of free disk for the model files, plus the engine image: 0.3 GiB (Vulkan) or 8.6 GiB (ROCm).
+  `apk add bash curl git python3 docker`.
+- About 25 GB of free disk for the model files, plus the engine image on disk: 1.3 GB (Vulkan) or 32 GB (ROCm, built
+  on ROCm's full dev image), and room for its build stages.
 
 ## Benchmarks
 
@@ -447,7 +454,8 @@ which ran into each of them on this machine.
 | `setup.sh` | host checks and fixes: GPU, BIOS carve-out, host tools, Docker, kernel, GTT parameters, tuned |
 | `start.sh` / `stop.sh` | serve and stop |
 | `scripts/config.sh` | every setting, with `.env` and environment overrides |
-| `scripts/prepare.sh` | model download and sha256 check, image pull |
+| `scripts/prepare.sh` | model download and sha256 check, engine build or image pull |
+| `patches/` | changes on top of strix-llama.cpp `ENGINE_REF`, applied in order: one open strix-llama.cpp PR each |
 | `scripts/host.sh` | finds the gfx1151 (render node, GTT counters) through KFD's topology |
 | `tests/check.py` | checks against the running server |
 | `tests/host_test.sh` | `scripts/host.sh` against fake topologies, no GPU needed |

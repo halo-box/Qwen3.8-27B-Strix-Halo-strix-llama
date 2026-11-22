@@ -15,11 +15,20 @@ fi
 
 # ── Engine ───────────────────────────────────────────────────────────────────
 : "${BACKEND:=vulkan}"                # vulkan | rocm
-case "$BACKEND" in
-    rocm)   : "${IMAGE:=ghcr.io/halo-box/strix-llama.cpp:server-rocm-b12474@sha256:c7113fbf44dbd21875140a47fce0812b2725d6ce32756100ded74303f5b6c48d}" ;;
-    vulkan) : "${IMAGE:=ghcr.io/halo-box/strix-llama.cpp:server-vulkan-b12474@sha256:fd6c97884343254ff15ae61124f464b8428bbe0bf95d4390c9105981dca497ea}" ;;
-    *) echo "Error: BACKEND must be rocm or vulkan, got '$BACKEND'" >&2; exit 1 ;;
-esac
+case "$BACKEND" in rocm|vulkan) ;; *) echo "Error: BACKEND must be rocm or vulkan, got '$BACKEND'" >&2; exit 1 ;; esac
+: "${ENGINE_VERSION:=b13579}"          # strix-llama.cpp release the engine is built from
+: "${ENGINE_REF:=2c3dc199d2a6242ddfbb595a3c61d018fa1c5a13}"
+: "${ENGINE_REPO:=https://github.com/halo-box/strix-llama.cpp.git}"
+: "${PATCHES:=1}"                      # 1: build ENGINE_REF with patches/*.patch; 0: strix-llama.cpp's published image
+PATCHES_HASH=$(cat "$(dirname "${BASH_SOURCE[0]}")"/../patches/*.patch 2>/dev/null | sha256sum | cut -c1-12)
+if [[ "$PATCHES" == 1 ]]; then
+    : "${IMAGE:=qwen38-27b-strix-engine:$BACKEND-$ENGINE_VERSION-$PATCHES_HASH}"
+elif [[ "$BACKEND" == rocm ]]; then
+    : "${IMAGE:=ghcr.io/halo-box/strix-llama.cpp:server-rocm-$ENGINE_VERSION@sha256:4e3d7e65aaf502e683082681dac03276f383903ed3dde6060d6caf9181b3bf34}"
+else
+    : "${IMAGE:=ghcr.io/halo-box/strix-llama.cpp:server-vulkan-$ENGINE_VERSION@sha256:c22912c85e5de10ec15a8e87c49566287750ed9be1f20493097a3ebd9f6eafee}"
+fi
+: "${ENGINE_SRC:=${XDG_CACHE_HOME:-$HOME/.cache}/qwen38-27b-strix/engine}"  # source tree prepare.sh builds from
 : "${SERVER_BIN:=}"                     # llama-server in an image whose entrypoint is not it; empty: the image's entrypoint
 : "${CONTAINER_NAME:=qwen38-27b-strix}"
 
@@ -55,6 +64,7 @@ esac
 : "${DRAFT_ADAPTIVE:=1}"               # size each draft from measured acceptance: Vulkan, 8 requests, prose 46.0 against 39.3 tok/s fixed
 : "${SPEC_DRAFT_MAX_SLOTS:=0}"         # draft only while at most this many requests generate (0 = always); Vulkan, 8 requests: code 98.0 drafting against 61.6 without
 : "${DRAFT_P_MIN:=0}"                 # stop a draft chain below this draft probability
+: "${DRAFT_SAMPLING:=greedy}"            # greedy | probabilistic (rejection sampling) | keyed (patches/0003)
 : "${SPEC_N_RS_SEQ:=-1}"               # recurrent rollback snapshots per slot (#147); -1 follows DRAFT_N, 0 disables the fast path
 
 # ── Sampling defaults (Qwen's thinking-mode values; a request's own values win) ─

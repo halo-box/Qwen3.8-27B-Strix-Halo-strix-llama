@@ -48,7 +48,7 @@ run "systemd-boot" \
     'grep -q "^options root=UUID=x rw .*amdgpu.gttsize=" /boot/loader/entries/linux.conf && ls /boot/loader/entries/linux.conf.bak.* >/dev/null && echo PASS'
 run "packages (apt-get)" \
     'stub apt-get; stub systemctl' \
-    'grep -q "^apt-get install -y curl python3 procps$" /tmp/calls && grep -q "^apt-get install -y docker.io$" /tmp/calls && grep -q "^systemctl enable --now docker$" /tmp/calls && echo PASS'
+    'grep -q "^apt-get install -y curl git python3 procps$" /tmp/calls && grep -q "^apt-get install -y docker.io$" /tmp/calls && grep -q "^systemctl enable --now docker$" /tmp/calls && echo PASS'
 run "no known boot loader" \
     ':' \
     'grep -q "add .* to your boot loader by hand" /tmp/setup.log && echo PASS'

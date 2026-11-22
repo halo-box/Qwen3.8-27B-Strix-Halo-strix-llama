@@ -1,0 +1,12 @@
+# strix-llama.cpp b13579, decode only. llama-bench showed no prompt or single-row change from b12474 or from patches/,
+# only in verify batches: Vulkan 9-16 rows (patches/0001), ROCm 4-8 rows (patches/0002). Median of 3.
+vk-stock    | PATCHES=0 BACKEND=vulkan                    | --clients 1,2,4,8 --prefill ""
+vulkan      | BACKEND=vulkan                              | --clients 1,2,4,8 --prefill ""
+rocm-stock  | PATCHES=0 BACKEND=rocm                      | --clients 1,2,4,6 --prefill ""
+rocm        | BACKEND=rocm                                | --clients 1,2,4,6 --prefill ""
+# Longer drafts verify 12 or 16 rows, cheap on Vulkan with patches/0001. Four slots keep the rollback snapshots in the plan.
+vk-p4-n11   | BACKEND=vulkan PARALLEL=4 DRAFT_N=11        | --clients 1,2 --prefill ""
+vk-p4-n15   | BACKEND=vulkan PARALLEL=4 DRAFT_N=15        | --clients 1,2 --prefill ""
+# Draft sampling at temperature > 0 (prose); code runs at temperature 0, where all three are the same.
+vk-prob     | BACKEND=vulkan DRAFT_SAMPLING=probabilistic | --clients 1,2 --prefill ""
+vk-keyed    | BACKEND=vulkan DRAFT_SAMPLING=keyed         | --clients 1,2 --prefill ""

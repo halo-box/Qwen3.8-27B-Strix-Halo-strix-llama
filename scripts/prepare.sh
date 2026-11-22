@@ -41,6 +41,21 @@ if [[ "$VISION" == 1 ]]; then
         927607488 cbb841a9ee0636b2ec172f5bb8df2ea8dfeb01e90fe7c6126581d662a0b4e43e mmproj-F16.gguf
 fi
 
-# ── Engine image: strix-llama.cpp's own, pinned in scripts/config.sh ─────────
-docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull "$IMAGE" \
-    || { echo "Error: could not pull $IMAGE" >&2; exit 1; }
+# ── Engine image: ENGINE_REF plus patches/*.patch, or the published image ──
+build_engine() {
+    echo "building $IMAGE: strix-llama.cpp $ENGINE_VERSION with $(cd patches && echo *.patch)"
+    rm -rf "$ENGINE_SRC"; mkdir -p "$ENGINE_SRC"
+    git -C "$ENGINE_SRC" init -q
+    git -C "$ENGINE_SRC" fetch -q --depth 1 "$ENGINE_REPO" "$ENGINE_REF"
+    git -C "$ENGINE_SRC" checkout -q FETCH_HEAD
+    for p in patches/*.patch; do git -C "$ENGINE_SRC" apply "$PWD/$p" || { echo "Error: $p does not apply to $ENGINE_REF" >&2; exit 1; }; done
+    local arch=(); [[ "$BACKEND" == rocm ]] && arch=(--build-arg ROCM_DOCKER_ARCH=gfx1151)
+    docker build --target server -f "$ENGINE_SRC/.devops/$BACKEND.Dockerfile" "${arch[@]}" \
+        --build-arg APP_VERSION="$ENGINE_VERSION+$PATCHES_HASH" --build-arg APP_REVISION="$ENGINE_REF" \
+        --label recipe.patches="$PATCHES_HASH" -t "$IMAGE" "$ENGINE_SRC"
+    rm -rf "$ENGINE_SRC"
+}
+if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    if [[ "$PATCHES" == 1 ]]; then build_engine
+    else docker pull "$IMAGE" || { echo "Error: could not pull $IMAGE" >&2; exit 1; }; fi
+fi

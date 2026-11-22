@@ -62,7 +62,7 @@ install() {
 
 echo "Host tools"
 need=()
-for t in curl python3 sha256sum pgrep stat df awk sed grep; do command -v "$t" >/dev/null || need+=("$(pkg "$t")"); done
+for t in curl git python3 sha256sum pgrep stat df awk sed grep; do command -v "$t" >/dev/null || need+=("$(pkg "$t")"); done
 mapfile -t need < <(printf '%s\n' "${need[@]}" | awk 'NF && !seen[$0]++')
 if ((${#need[@]})); then
     bad "missing packages: ${need[*]}"

@@ -1,0 +1,119 @@
+cuda : per-type MMVQ/MMQ crossover by weight shape on gfx1151
+
+From https://github.com/halo-box/strix-llama.cpp/pull/309 (head 05d4abca7), rebased on strix-llama.cpp b13579.
+
+ 4 files changed, 35 insertions(+), 6 deletions(-)
+
+diff --git a/ggml/src/ggml-cuda/ggml-cuda.cu b/ggml/src/ggml-cuda/ggml-cuda.cu
+index 73a41922d..ea58701f5 100644
+--- a/ggml/src/ggml-cuda/ggml-cuda.cu
++++ b/ggml/src/ggml-cuda/ggml-cuda.cu
+@@ -2366,7 +2366,7 @@ static bool ggml_cuda_should_fuse_mul_mat_vec_q(const ggml_tensor * tensor) {
+     }
+ 
+     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
+-    bool use_mul_mat_vec_q = ggml_cuda_should_use_mmvq(src0->type, cc, src1->ne[1]) && !bad_padding_clear &&
++    bool use_mul_mat_vec_q = ggml_cuda_should_use_mmvq(src0->type, cc, src1->ne[1], src0->ne[1], src0->ne[0]) && !bad_padding_clear &&
+                              src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32;
+     if (ggml_cuda_mmb_r2_packed(src0)) {
+         return false;   // repacked in place (MMB_DOWN_R2 / MMB_GLU_R2): MMVQ cannot read it
+@@ -2545,7 +2545,7 @@ static bool ggml_cuda_should_fuse_mul_mat_q(const ggml_tensor * up, const ggml_t
+     const bool    is_id     = up->op == GGML_OP_MUL_MAT_ID;
+     const int64_t ncols     = is_id ? y->ne[2]    : y->ne[1];
+     const int64_t nchannels = is_id ? x_up->ne[2] : y->ne[2]*y->ne[3];
+-    const bool    use_mmvq  = is_id ? ncols <= get_mmvq_mmid_max_batch(x_up->type, cc) : ggml_cuda_should_use_mmvq(x_up->type, cc, ncols);
++    const bool    use_mmvq  = is_id ? ncols <= get_mmvq_mmid_max_batch(x_up->type, cc) : ggml_cuda_should_use_mmvq(x_up->type, cc, ncols, x_up->ne[1], x_up->ne[0]);
+     // do not fuse the matmuls that few-row MMQ takes in ggml_cuda_mul_mat; for MUL_MAT_ID the fused MMQ keeps the expert gate and up
+     if (!is_id && ggml_cuda_should_use_mmq_few(x_up, y, nullptr, cc)) {
+         return false;
+@@ -2606,7 +2606,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
+ 
+     const int64_t mmvf_ncols = ggml_get_op_params_i32(dst, 1) == GGML_HINT_EXACT_BATCH && src0->type == GGML_TYPE_BF16 ? 1 : ne11;
+     if (ggml_get_op_params_i32(dst, 1) == GGML_HINT_EXACT_BATCH && ne11 > MMVQ_MAX_BATCH_SIZE &&
+-            ggml_cuda_should_use_mmvq(src0->type, cc, 1)) {
++            ggml_cuda_should_use_mmvq(src0->type, cc, 1, src0->ne[1], src0->ne[0])) {
+         // Keep the single-column arithmetic when an exact batch exceeds the matvec limit.
+         for (int64_t col = 0; col < ne11; ++col) {
+             ggml_tensor src1_col = *src1;
+@@ -2657,7 +2657,10 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
+     }
+     // from a per-type number of src1 columns up to 24, few-row MMQ is faster than MMVQ and MMQ
+     const bool use_mmq_few = ggml_cuda_should_use_mmq_few(src0, src1, nullptr, cc);
+-    if (!use_mmq_few && ggml_cuda_should_use_mmvq(src0->type, cc, ne11)) {
++    // an exact batch must give every column the bits of n == 1, which MMVQ does up to its batch limit
++    const bool    exact_batch = ggml_get_op_params_i32(dst, 1) == GGML_HINT_EXACT_BATCH && ne11 <= MMVQ_MAX_BATCH_SIZE;
++    const int64_t mmvq_ncols  = exact_batch ? 1 : ne11;
++    if (!use_mmq_few && ggml_cuda_should_use_mmvq(src0->type, cc, mmvq_ncols, src0->ne[1], src0->ne[0])) {
+         ggml_cuda_mul_mat_vec_q(ctx, src0, src1, nullptr, dst);
+         return;
+     }
+diff --git a/ggml/src/ggml-cuda/mmvq.cu b/ggml/src/ggml-cuda/mmvq.cu
+index 85ff6e494..5280a08e4 100644
+--- a/ggml/src/ggml-cuda/mmvq.cu
++++ b/ggml/src/ggml-cuda/mmvq.cu
+@@ -343,7 +343,7 @@ int get_mmvq_mmid_max_batch(ggml_type type, int cc) {
+     return MMVQ_MAX_BATCH_SIZE;
+ }
+ 
+-bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
++bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11, int64_t ne01, int64_t ne00) {
+     if (!ggml_is_quantized(type)) {
+         return false;
+     }
+@@ -409,6 +409,26 @@ bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
+                 return ne11 <= MMVQ_MAX_BATCH_SIZE;
+         }
+     }
++    if (cc == GGML_CUDA_CC_OFFSET_AMD + 0x1151) {
++        // Radeon 8060S (gfx1151), ROCm 10.1, 2026-11-19: MMQ only inside an (ne01, ne00) region where it was at least 3%
++        // faster than the stock choice for every one of the 190 dense weight shapes of 19 common GGUF models in it, and at
++        // least 3 shapes support the region. Small or thin matrices stay on MMVQ: q8_0 ne01=48 ne00=5120 at 8 columns took
++        // 24.3 us on MMQ against 10.0 us. Types with too few shapes keep the stock choice. q4_K at 4-6 columns needs
++        // ne00 >= 2560: at ne00 = 1536 MMQ was faster alone but 2-6% slower inside qwen2.5-1.5B and LFM2-700M. q4_0
++        // keeps the stock choice: its MMQ cells were faster alone but 2% slower inside Qwen3-4B Q4_0 at 7 columns.
++        const int64_t n = ne11, m = ne01, k = ne00;
++        bool mmq = false;
++        switch (type) {
++            case GGML_TYPE_Q8_0:   mmq = n >= 7 && m >= 2048; break;
++            case GGML_TYPE_Q4_K:   mmq = k >= 1024 && ((n >= 7 && m >= 6144) || (k >= 2560 && ((n == 6 && m >= 6144) || (n == 5 && m >= 8192) || (n == 4 && m >= 8192 && m <= 15360)))); break;
++            case GGML_TYPE_Q5_K:   mmq = k >= 2560 && ((n >= 7 && m >= 1024) || (n >= 5 && m >= 2560) || (n == 4 && m >= 4096)); break;
++            case GGML_TYPE_Q6_K:   mmq = k >= 1024 && ((n == 8 && m >= 3840) || (n == 7 && m >= 12288)); break;
++            case GGML_TYPE_IQ4_XS: mmq = n == 8 && m >= 5120 && m <= 17408 && k >= 2560; break;
++            case GGML_TYPE_IQ4_NL: mmq = n == 8 && m >= 5120 && m <= 17408 && k >= 5120; break;
++            default: break;
++        }
++        return !mmq && ne11 <= MMVQ_MAX_BATCH_SIZE;
++    }
+     if (GGML_CUDA_CC_IS_RDNA3_5(cc)) {
+         switch (type) { // tuned on Radeon 8060S (gfx1151)
+             case GGML_TYPE_Q8_0:
+diff --git a/ggml/src/ggml-cuda/mmvq.cuh b/ggml/src/ggml-cuda/mmvq.cuh
+index c2d1da925..792d5bfd1 100644
+--- a/ggml/src/ggml-cuda/mmvq.cuh
++++ b/ggml/src/ggml-cuda/mmvq.cuh
+@@ -2,7 +2,7 @@
+ 
+ #define MMVQ_MAX_BATCH_SIZE 8 // Max. batch size for which to use MMVQ kernels.
+ 
+-bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11);
++bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11, int64_t ne01, int64_t ne00);
+ 
+ // Returns the maximum batch size for which MMVQ should be used for MUL_MAT_ID,
+ // based on the quantization type and GPU architecture (compute capability).
+diff --git a/tests/test-backend-ops.cpp b/tests/test-backend-ops.cpp
+index 0097a48e4..ddd47a5fa 100644
+--- a/tests/test-backend-ops.cpp
++++ b/tests/test-backend-ops.cpp
+@@ -17063,6 +17063,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
+             test_cases.emplace_back(new test_mul_mat_exact_batch(type_a, 128, n, 5120));
+         }
+     }
++    // exact batches wide enough for the per-type MMQ crossover of ggml_cuda_should_use_mmvq on RDNA3.5
++    for (ggml_type type_a : {GGML_TYPE_Q8_0, GGML_TYPE_Q4_0, GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K, GGML_TYPE_IQ4_XS, GGML_TYPE_IQ4_NL}) {
++        for (int64_t n : {5, 7, 8}) {
++            test_cases.emplace_back(new test_mul_mat_exact_batch(type_a, 8192, n, 5120));
++        }
++    }
+ 
+     // m == 1, with n on both sides of MMVF_MAX_BATCH_SIZE (8): mmvf below, operand swap above
+     for (int64_t n : {1, 7, 8, 9, 16, 127, 128, 511, 512}) {
